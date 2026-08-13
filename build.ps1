@@ -1,14 +1,18 @@
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = "Stop"
 
-python -m pip install -r requirements.txt
-python -m pip install pyinstaller
+Remove-Item -Recurse -Force ".\build" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force ".\dist" -ErrorAction SilentlyContinue
+Remove-Item -Force ".\BaixarLegenda.spec" -ErrorAction SilentlyContinue
 
 pyinstaller `
-  --onefile `
-  --noconsole `
-  --name BaixarLegenda `
-  baixar_legenda.py
+    --onefile `
+    --name "BaixarLegenda" `
+    --collect-all babelfish `
+    --collect-all guessit `
+    --copy-metadata babelfish `
+    --copy-metadata guessit `
+    ".\baixar_legenda.py"
 
-Write-Host ''
-Write-Host 'Build concluído:'
-Write-Host (Resolve-Path '.\dist\BaixarLegenda.exe')
+Write-Host ""
+Write-Host "Build concluido:"
+Write-Host "  dist\BaixarLegenda.exe"

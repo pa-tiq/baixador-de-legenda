@@ -76,6 +76,8 @@ O resultado será:
 dist\BaixarLegenda.exe
 ```
 
+Copie o arquivo config.json para a pasta dist.
+
 ## 4. Instalar no menu de contexto
 
 Por exemplo:

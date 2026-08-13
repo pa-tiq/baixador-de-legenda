@@ -5,16 +5,15 @@ import json
 import os
 import sqlite3
 import struct
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from guessit import guessit
 
 import requests
-import json
-import subprocess
+from guessit import guessit
 
 APP_NAME = "BaixarLegenda"
 APP_VERSION = "1.0.0"
@@ -35,6 +34,9 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 # Durante o desenvolvimento, também aceitamos config.json ao lado do script.
 # Isso facilita o primeiro teste sem exigir cópia manual para %APPDATA%.
 LOCAL_CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
+# Quando empacotado com PyInstaller --onefile.
+EXE_CONFIG_FILE = Path(sys.executable).resolve().parent / "config.json"
+
 DB_FILE = CONFIG_DIR / "history.db"
 
 
@@ -61,16 +63,32 @@ class Subtitle:
 
 
 def load_config() -> dict[str, Any]:
-    # Para desenvolvimento, permite deixar config.json na mesma pasta do script.
-    # Para instalação/EXE, a configuração oficial continua em %APPDATA%\BaixarLegenda.
-    config_file = CONFIG_FILE if CONFIG_FILE.exists() else LOCAL_CONFIG_FILE
+    """
+    Procura o config.json nesta ordem:
 
-    if not config_file.exists():
+    1. %APPDATA%\\BaixarLegenda\\config.json
+    2. Ao lado do executável (PyInstaller)
+    3. Ao lado do .py (desenvolvimento)
+    """
+
+    config_candidates = [
+        CONFIG_FILE,
+        EXE_CONFIG_FILE,
+        LOCAL_CONFIG_FILE,
+    ]
+
+    config_file = next(
+        (path for path in config_candidates if path.exists()),
+        None,
+    )
+
+    if config_file is None:
         raise SubtitleError(
             "Configuração não encontrada.\n"
             f"Crie {CONFIG_FILE} a partir de config.example.json, "
-            f"ou coloque config.json ao lado de {Path(__file__).name}."
+            f"ou coloque config.json ao lado do executável."
         )
+
     try:
         return json.loads(config_file.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
