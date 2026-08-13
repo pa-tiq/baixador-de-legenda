@@ -124,7 +124,7 @@ Assim, uma mesma legenda pode ser baixada para vídeos diferentes sem conflito, 
 ## Estrutura
 
 ```text
-baixar-legenda/
+baixador-de-legenda/
 ├── baixar_legenda.py
 ├── config.example.json
 ├── requirements.txt
