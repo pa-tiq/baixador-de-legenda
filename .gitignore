@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.spec
+config.json
+*.db
+*.db-shm
+*.db-wal

@@ -1,0 +1,9 @@
+{
+  "api_key": "COLOQUE_SUA_API_KEY_AQUI",
+  "username": "",
+  "password": "",
+  "language": "pt-br",
+  "max_results": 100,
+  "app_name": "BaixarLegenda",
+  "app_version": "1.0.0"
+}
