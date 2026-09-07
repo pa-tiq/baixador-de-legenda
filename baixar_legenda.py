@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import struct
 import subprocess
 import sys
 import tempfile
+import time
+import tkinter as tk
 from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from tkinter import ttk
 from typing import Any
 
 import requests
@@ -38,6 +43,51 @@ LOCAL_CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 EXE_CONFIG_FILE = Path(sys.executable).resolve().parent / "config.json"
 
 DB_FILE = CONFIG_DIR / "history.db"
+LOG_DIR = CONFIG_DIR / "logs"
+LOG_FILE = LOG_DIR / "baixarlegenda.log"
+
+logger = logging.getLogger(APP_NAME)
+
+
+def setup_logging() -> None:
+    """
+    Salva um log detalhado em %APPDATA%\\BaixarLegenda\\logs\\baixarlegenda.log,
+    tanto na execução via menu de contexto quanto em testes diretos no
+    terminal. Isso é o que permite investigar por que a busca funciona
+    para alguns vídeos e falha para outros: fica registrado o que foi
+    identificado no vídeo e a lista completa de candidatas retornadas
+    pelo OpenSubtitles.
+
+    Quando executado com um terminal anexado (teste manual via
+    `python baixar_legenda.py ...`), o log também é espelhado no console.
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    logger.setLevel(logging.DEBUG)
+    logger.handlers.clear()
+
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    file_handler = RotatingFileHandler(
+        LOG_FILE, maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    # No EXE empacotado com console=False, sys.stdout é None: só
+    # duplicamos para o console quando ele realmente existe (teste
+    # direto no terminal com `python baixar_legenda.py ...`).
+    if sys.stdout is not None:
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setLevel(logging.INFO)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+
+    logger.info("=== Nova execução ===")
+    logger.info("Log salvo em: %s", LOG_FILE)
 
 
 class SubtitleError(RuntimeError):
@@ -50,6 +100,7 @@ class Subtitle:
     subtitle_id: str
     language: str
     release: str
+    title: str | None
     download_count: int
     new_download_count: int
     rating: float | None
@@ -246,27 +297,37 @@ def api_error(response: requests.Response, prefix: str) -> str:
 
 def identify_video(video: Path) -> dict[str, Any]:
     """
-    Identifica o vídeo priorizando o metadado 'Título'.
-
-    Ordem:
-        1. Metadado Title
-        2. Nome do arquivo
+    Identifica o vídeo priorizando o nome do arquivo para não perder
+    a marcação de temporada e episódio (SXXEXX), usando o metadado 'Título'
+    como fallback ou complemento.
     """
-
-    metadata_title = get_video_title(video)
-
-    if metadata_title:
-        info = guessit(metadata_title)
-
-        # Guardamos também o texto original utilizado.
-        info["_source"] = "metadata"
-        info["_query_title"] = metadata_title
-
-        return info
-
+    # 1. Analisa o nome do arquivo primeiro (ideal para extrair SXXEXX)
     info = guessit(video.name)
     info["_source"] = "filename"
     info["_query_title"] = video.stem
+
+    # 2. Busca o metadado interno
+    metadata_title = get_video_title(video)
+
+    if metadata_title:
+        info_metadata = guessit(metadata_title)
+
+        # Se o nome do arquivo falhou em detectar que é série, mas o metadado tem essa info
+        if info.get("type") != "episode" and info_metadata.get("type") == "episode":
+            info_metadata["_source"] = "metadata"
+            info_metadata["_query_title"] = metadata_title
+            return info_metadata
+
+        # Se o nome do arquivo detectou o episódio (S00E01) mas o título ficou confuso (ex: "OTGW")
+        if info.get("type") == "episode" and info_metadata.get("title"):
+            # Substitui pelo título limpo do metadado se disponível
+            info["title"] = info_metadata["title"]
+            info["_source"] = "filename_and_metadata"
+
+        # Se não achou título pelo nome do arquivo
+        elif not info.get("title"):
+            info["title"] = info_metadata.get("title") or metadata_title
+            info["_source"] = "metadata_fallback"
 
     return info
 
@@ -283,8 +344,10 @@ def search_subtitles(
     source = info.get("_source", "filename")
     query_title = info.get("_query_title")
 
-    print(f"Identificação ({source}): {query_title}")
-    print(f"Informações detectadas: {info}")
+    logger.info("Vídeo: %s", video)
+    logger.info("Moviehash: %s", movie_hash)
+    logger.info("Identificação (%s): %s", source, query_title)
+    logger.debug("Informações detectadas pelo GuessIt: %s", info)
 
     # ------------------------------------------------------------
     # 1. Se for episódio de série, NÃO usar o nome completo do
@@ -312,6 +375,8 @@ def search_subtitles(
             if season is not None:
                 params["season_number"] = int(season)
 
+            logger.info("Busca por episódio: params=%s", params)
+
             response = session.get(
                 f"{API_BASE}/subtitles",
                 params=params,
@@ -326,10 +391,17 @@ def search_subtitles(
                     )
                 )
 
-            results = parse_subtitles(response.json().get("data", []))
+            raw_data = response.json().get("data", [])
+            logger.debug(
+                "Resposta bruta (episódio, %d itens): %s", len(raw_data), raw_data
+            )
 
-            if results:
-                return rank_subtitles(results)
+            results = parse_subtitles(raw_data)
+            ranked = rank_subtitles(results)
+            log_candidates("episódio", ranked)
+
+            if ranked:
+                return ranked
 
     # ------------------------------------------------------------
     # 2. Para filmes, ou se a identificação da série falhar,
@@ -343,6 +415,8 @@ def search_subtitles(
         "page": 1,
         "per_page": min(max_results, 100),
     }
+
+    logger.info("Busca por moviehash: params=%s", params)
 
     response = session.get(
         f"{API_BASE}/subtitles",
@@ -358,10 +432,15 @@ def search_subtitles(
             )
         )
 
-    results = parse_subtitles(response.json().get("data", []))
+    raw_data = response.json().get("data", [])
+    logger.debug("Resposta bruta (moviehash, %d itens): %s", len(raw_data), raw_data)
 
-    if results:
-        return rank_subtitles(results)
+    results = parse_subtitles(raw_data)
+    ranked = rank_subtitles(results)
+    log_candidates("moviehash", ranked)
+
+    if ranked:
+        return ranked
 
     # ------------------------------------------------------------
     # 3. Último fallback: busca pelo título identificado pelo
@@ -378,6 +457,8 @@ def search_subtitles(
         "per_page": min(max_results, 100),
     }
 
+    logger.info("Busca por nome: params=%s", params)
+
     response = session.get(
         f"{API_BASE}/subtitles",
         params=params,
@@ -392,9 +473,14 @@ def search_subtitles(
             )
         )
 
-    results = parse_subtitles(response.json().get("data", []))
+    raw_data = response.json().get("data", [])
+    logger.debug("Resposta bruta (nome, %d itens): %s", len(raw_data), raw_data)
 
-    return rank_subtitles(results)
+    results = parse_subtitles(raw_data)
+    ranked = rank_subtitles(results)
+    log_candidates("nome", ranked)
+
+    return ranked
 
 
 def parse_subtitles(items: list[dict[str, Any]]) -> list[Subtitle]:
@@ -412,12 +498,24 @@ def parse_subtitles(items: list[dict[str, Any]]) -> list[Subtitle]:
             file_id = int(file_info["file_id"])
         except (KeyError, TypeError, ValueError):
             continue
+
+        # Extrair Título (Tenta várias chaves possíveis que a API retorna)
+        feat = attrs.get("feature_details", {})
+        title_str = (
+            feat.get("title")
+            or feat.get("movie_name")
+            or feat.get("parent_title")
+            or attrs.get("movie_name")
+            or ""
+        )
+
         results.append(
             Subtitle(
                 file_id=file_id,
                 subtitle_id=str(attrs.get("subtitle_id") or item.get("id") or ""),
                 language=language,
                 release=str(attrs.get("release") or ""),
+                title=str(title_str) if title_str else None,  # <--- Enviando título
                 download_count=int(attrs.get("download_count") or 0),
                 new_download_count=int(attrs.get("new_download_count") or 0),
                 rating=(
@@ -456,6 +554,33 @@ def rank_subtitles(results: list[Subtitle]) -> list[Subtitle]:
         ),
         reverse=True,
     )
+
+
+def log_candidates(stage: str, candidates: list[Subtitle]) -> None:
+    """Registra, de forma legível, as candidatas encontradas em uma etapa
+    da busca (já parseadas e ranqueadas). Complementa o JSON bruto que
+    já foi salvo em nível DEBUG logo antes desta chamada."""
+    if not candidates:
+        logger.info("Etapa '%s': nenhuma candidata PT-BR encontrada.", stage)
+        return
+    logger.info(
+        "Etapa '%s': %d candidata(s) PT-BR encontrada(s).", stage, len(candidates)
+    )
+    for i, s in enumerate(candidates, start=1):
+        logger.info(
+            "  [%d] file_id=%s release=%r moviehash_match=%s trusted=%s "
+            "downloads=%s rating=%s hi=%s ai=%s mt=%s",
+            i,
+            s.file_id,
+            s.release or s.file_name,
+            s.moviehash_match,
+            s.from_trusted,
+            s.download_count,
+            s.rating,
+            s.hearing_impaired,
+            s.ai_translated,
+            s.machine_translated,
+        )
 
 
 def download_subtitle(
@@ -504,6 +629,108 @@ def download_subtitle(
         temp_path.unlink(missing_ok=True)
 
 
+def _format_flags(subtitle: Subtitle) -> str:
+    flags = []
+    if subtitle.moviehash_match:
+        flags.append("match exato")
+    if subtitle.from_trusted:
+        flags.append("confiável")
+    if subtitle.hearing_impaired:
+        flags.append("HI")
+    if subtitle.ai_translated:
+        flags.append("trad. IA")
+    if subtitle.machine_translated:
+        flags.append("trad. máquina")
+    return ", ".join(flags) if flags else "—"
+
+
+def choose_subtitle_gui(
+    video: Path,
+    candidates: list[Subtitle],
+) -> tuple[Subtitle | None, tk.Tk | None]:  # <--- Atualize o tipo de retorno
+    result: dict[str, Subtitle | None] = {"subtitle": None}
+
+    root = tk.Tk()
+    root.title(f"{APP_NAME} — Escolher legenda")
+    root.geometry("900x420")
+    root.minsize(700, 320)
+
+    header = ttk.Label(
+        root,
+        text=f"Vídeo: {video.name}\nEscolha a legenda PT-BR para baixar:",
+        justify="left",
+        padding=(10, 10),
+    )
+    header.pack(anchor="w")
+
+    columns = ("release", "flags", "downloads", "rating")
+    tree = ttk.Treeview(root, columns=columns, show="headings", selectmode="browse")
+    tree.heading("release", text="Release / arquivo")
+    tree.heading("flags", text="Indicadores")
+    tree.heading("downloads", text="Downloads")
+    tree.heading("rating", text="Avaliação")
+    tree.column("release", width=430, anchor="w")
+    tree.column("flags", width=220, anchor="w")
+    tree.column("downloads", width=100, anchor="center")
+    tree.column("rating", width=90, anchor="center")
+
+    for i, subtitle in enumerate(candidates):
+        # <--- Adicionando o título na exibição --->
+        base_name = subtitle.release or subtitle.file_name or "(sem nome)"
+        display_name = (
+            f"{subtitle.title} | {base_name}" if subtitle.title else base_name
+        )
+
+        tree.insert(
+            "",
+            "end",
+            iid=str(i),
+            values=(
+                display_name,
+                _format_flags(subtitle),
+                subtitle.download_count,
+                f"{subtitle.rating:.1f}" if subtitle.rating is not None else "—",
+            ),
+        )
+
+    tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+    if candidates:
+        tree.selection_set("0")
+        tree.focus("0")
+
+    button_frame = ttk.Frame(root, padding=(10, 0, 10, 10))
+    button_frame.pack(fill="x")
+
+    def confirm(_event: object = None) -> None:
+        selection = tree.selection()
+        if not selection:
+            return
+        result["subtitle"] = candidates[int(selection[0])]
+        root.quit()  # <--- Modificado: Interrompe o mainloop sem destruir a janela
+
+    def cancel() -> None:
+        result["subtitle"] = None
+        root.destroy()  # <--- Botão cancelar continua destruindo e abortando
+
+    ttk.Button(button_frame, text="Baixar selecionada", command=confirm).pack(
+        side="right"
+    )
+    ttk.Button(button_frame, text="Cancelar", command=cancel).pack(
+        side="right", padx=(0, 8)
+    )
+
+    tree.bind("<Double-1>", confirm)
+    root.protocol("WM_DELETE_WINDOW", cancel)
+    root.mainloop()
+
+    # Se root foi destruída no cancelar, verificamos antes de retornar
+    try:
+        root.state()
+        return result["subtitle"], root
+    except tk.TclError:
+        return result["subtitle"], None
+
+
 def notify(title: str, message: str, error: bool = False) -> None:
     try:
         import ctypes
@@ -550,35 +777,81 @@ def run(video_arg: str) -> int:
                 "Apague o .srt se quiser reiniciar a seleção do topo da lista."
             )
 
-        subtitle = candidates[0]
+        logger.info(
+            "Abrindo janela de seleção com %d candidata(s) (existing_subtitle=%s).",
+            len(candidates),
+            existing_subtitle,
+        )
+        # Substitua a chamada antiga a choose_subtitle_gui por esta:
+        subtitle, root = choose_subtitle_gui(video, candidates)
+
+        if subtitle is None:
+            logger.info("Usuário cancelou a seleção de legenda.")
+            return 3
+
+        logger.info(
+            "Legenda escolhida: file_id=%s release=%r",
+            subtitle.file_id,
+            subtitle.release or subtitle.file_name,
+        )
+
         download_subtitle(session, subtitle, subtitle_path)
         mark_attempted(conn, movie_hash, subtitle)
 
-        notify(
-            APP_NAME,
-            f"Legenda baixada com sucesso!\n\n{subtitle_path.name}\n\n"
-            f"Release: {subtitle.release or '(não informado)'}",
-        )
+        logger.info("Download concluído com sucesso: %s", subtitle_path)
+
+        # <--- Lógica da nova interface de Sucesso com contagem --->
+        if root is not None:
+            # Apaga a tabela e botões da janela
+            for widget in root.winfo_children():
+                widget.destroy()
+
+            msg_label = ttk.Label(
+                root,
+                text="Legenda baixada com sucesso!\nFechando a janela em 2...",
+                font=("Segoe UI", 14),
+                justify="center",
+            )
+            msg_label.pack(expand=True)
+            root.update()  # Força a tela a renderizar
+
+            # Faz a contagem descrescente
+            for i in [1]:
+                time.sleep(1)
+                msg_label.config(
+                    text=f"Legenda baixada com sucesso!\nFechando a janela em {i}..."
+                )
+                root.update()
+
+            time.sleep(1)
+            root.destroy()
+
         return 0
     finally:
         conn.close()
 
 
 def main() -> int:
+    setup_logging()
+
     if len(sys.argv) != 2:
+        logger.error("Uso incorreto: argv=%s", sys.argv)
         notify(APP_NAME, "Uso: BaixarLegenda.exe <arquivo_de_video>", error=True)
         return 2
     try:
         return run(sys.argv[1])
     except requests.RequestException as exc:
+        logger.exception("Erro de comunicação com o OpenSubtitles")
         notify(
             APP_NAME, f"Erro de comunicação com o OpenSubtitles:\n\n{exc}", error=True
         )
         return 1
     except SubtitleError as exc:
+        logger.error("Erro esperado: %s", exc)
         notify(APP_NAME, str(exc), error=True)
         return 1
     except Exception as exc:
+        logger.exception("Erro inesperado")
         notify(APP_NAME, f"Erro inesperado:\n\n{type(exc).__name__}: {exc}", error=True)
         return 1
 

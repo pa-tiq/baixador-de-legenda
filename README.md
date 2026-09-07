@@ -9,10 +9,13 @@ Ao clicar em **Baixar legenda PT-BR** no menu de contexto de um vídeo:
 1. calcula o moviehash do vídeo;
 2. procura legendas PT-BR por moviehash;
 3. se não encontrar, faz fallback para busca pelo nome do arquivo;
-4. se ainda não existir `Video.srt`, baixa a primeira legenda da lista, ignorando o histórico;
-5. se `Video.srt` já existir, ignora as legendas que já foram tentadas para aquele moviehash e baixa a próxima;
-6. registra a legenda tentada em SQLite;
-7. substitui o `.srt` somente depois de o download terminar corretamente.
+4. se ainda não existir `Video.srt`, mostra todas as legendas encontradas em uma janela;
+5. se `Video.srt` já existir, mostra na janela apenas as legendas que ainda não foram tentadas para aquele moviehash;
+6. o usuário escolhe na janela a legenda que faz mais sentido (release, downloads, avaliação, se é match exato de moviehash, se é confiável, HI, tradução por IA/máquina) e clica em "Baixar selecionada";
+7. registra a legenda tentada em SQLite;
+8. substitui o `.srt` somente depois de o download terminar corretamente.
+
+Não abre mais uma janela de terminal: a interação é só pela janela de seleção (e, em caso de erro, uma caixa de mensagem do Windows).
 
 Para reiniciar completamente a seleção, basta apagar o `.srt`. O histórico permanece, mas a ausência do `.srt` faz o programa deliberadamente ignorá-lo na próxima execução.
 
@@ -110,7 +113,11 @@ O programa guarda a configuração e o histórico em:
 %APPDATA%\BaixarLegenda\
     config.json
     history.db
+    logs\
+        baixarlegenda.log
 ```
+
+`logs\baixarlegenda.log` registra, a cada execução, o vídeo processado, o moviehash, o que foi identificado (metadado/nome de arquivo, GuessIt), os parâmetros de cada busca e a lista completa de legendas retornadas pelo OpenSubtitles (bruta e já ranqueada) — útil para descobrir por que a busca funciona para um vídeo e não para outro. O arquivo gira automaticamente (até ~2 MB, mantendo 3 backups) para não crescer indefinidamente. Ao rodar `python .\baixar_legenda.py ...` direto no terminal, o mesmo log também aparece no console.
 
 O banco possui uma chave composta por:
 

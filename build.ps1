@@ -6,6 +6,7 @@ Remove-Item -Force ".\BaixarLegenda.spec" -ErrorAction SilentlyContinue
 
 pyinstaller `
     --onefile `
+    --noconsole `
     --name "BaixarLegenda" `
     --collect-all babelfish `
     --collect-all guessit `
