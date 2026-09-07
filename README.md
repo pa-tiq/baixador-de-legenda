@@ -76,7 +76,11 @@ O resultado será:
 dist\BaixarLegenda.exe
 ```
 
-Copie o arquivo config.json para a pasta dist.
+Copie o arquivo config.json para a pasta dist. Ele precisa estar na mesma pasta que o arquivo `.exe`.
+
+```powershell
+Copy-Item .\config.json .\dist\config.json
+```
 
 ## 4. Instalar no menu de contexto
 
