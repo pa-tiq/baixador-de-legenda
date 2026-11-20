@@ -1,4 +1,4 @@
-# BaixarLegenda
+# [Baixador de Legenda](https://github.com/pa-tiq/baixador-de-legenda)
 
 Pequeno utilitário para Windows que baixa automaticamente a legenda PT-BR de um arquivo de vídeo usando a API REST do OpenSubtitles.com.
 
@@ -45,16 +45,10 @@ Copie:
 Copy-Item .\config.example.json .\config.json
 ```
 
-Edite `config.json` e coloque sua API key.
+Edite `config.json` e preencha com suas credenciais.
 
 Durante o desenvolvimento, o programa aceita `config.json` na mesma pasta de `baixar_legenda.py`.
 Na instalação final, também pode usar `%APPDATA%\BaixarLegenda\config.json`.
-
-O arquivo final não deve ser versionado.
-
-### Autenticação
-
-O projeto funciona inicialmente apenas com a API key. Se sua aplicação/API exigir autenticação do usuário para downloads, preencha também `username` e `password`; o programa fará login e enviará o JWT nas requisições seguintes.
 
 ## 2. Testar sem criar EXE
 
