@@ -73,7 +73,7 @@ O resultado será:
 dist\BaixarLegenda.exe
 ```
 
-Copie o arquivo config.json para a pasta dist. Ele precisa estar na mesma pasta que o arquivo `.exe`.
+Copie o arquivo config.json para a pasta dist. Ele precisa estar na mesma pasta que o arquivo `BaixarLegenda.exe`.
 
 ```powershell
 Copy-Item .\config.json .\dist\config.json
