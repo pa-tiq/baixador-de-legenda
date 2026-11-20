@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import struct
 import subprocess
@@ -12,6 +13,7 @@ import tempfile
 import time
 import tkinter as tk
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from tkinter import ttk
@@ -397,8 +399,8 @@ def search_subtitles(
             )
 
             results = parse_subtitles(raw_data)
-            ranked = rank_subtitles(results)
-            log_candidates("episódio", ranked)
+            ranked = rank_subtitles(results, video.stem)
+            log_candidates("episódio", ranked, video.stem)
 
             if ranked:
                 return ranked
@@ -436,15 +438,14 @@ def search_subtitles(
     logger.debug("Resposta bruta (moviehash, %d itens): %s", len(raw_data), raw_data)
 
     results = parse_subtitles(raw_data)
-    ranked = rank_subtitles(results)
-    log_candidates("moviehash", ranked)
-
-    if ranked:
-        return ranked
+    ranked = rank_subtitles(results, video.stem)
+    log_candidates("moviehash", ranked, video.stem)
 
     # ------------------------------------------------------------
-    # 3. Último fallback: busca pelo título identificado pelo
-    #    GuessIt, e NÃO pelo nome inteiro do arquivo.
+    # 3. Complementa a busca por moviehash com uma busca pelo título
+    #    identificado pelo GuessIt, mesmo quando o hash encontrou
+    #    candidatas. O hash é um bom indício, mas pode apontar para
+    #    uma legenda incompatível com o release do vídeo.
     # ------------------------------------------------------------
     query = info.get("title") or video.stem
 
@@ -477,10 +478,17 @@ def search_subtitles(
     logger.debug("Resposta bruta (nome, %d itens): %s", len(raw_data), raw_data)
 
     results = parse_subtitles(raw_data)
-    ranked = rank_subtitles(results)
-    log_candidates("nome", ranked)
+    ranked_by_name = rank_subtitles(results, video.stem)
+    log_candidates("nome", ranked_by_name, video.stem)
 
-    return ranked
+    # Mantém os dados da resposta por hash em caso de duplicatas, pois
+    # ela é a origem do indicador moviehash_match.
+    candidates_by_file_id = {subtitle.file_id: subtitle for subtitle in ranked}
+    for subtitle in ranked_by_name:
+        candidates_by_file_id.setdefault(subtitle.file_id, subtitle)
+
+    combined = rank_subtitles(list(candidates_by_file_id.values()), video.stem)
+    return combined[: min(max_results, 100)]
 
 
 def parse_subtitles(items: list[dict[str, Any]]) -> list[Subtitle]:
@@ -535,15 +543,27 @@ def parse_subtitles(items: list[dict[str, Any]]) -> list[Subtitle]:
     return results
 
 
-def rank_subtitles(results: list[Subtitle]) -> list[Subtitle]:
+def subtitle_name_similarity(video_name: str, subtitle_name: str) -> float:
+    video_tokens = re.findall(r"[^\W_]+", video_name.casefold())
+    subtitle_tokens = re.findall(r"[^\W_]+", subtitle_name.casefold())
+    if not video_tokens or not subtitle_tokens:
+        return 0.0
+    return SequenceMatcher(None, video_tokens, subtitle_tokens, autojunk=False).ratio()
+
+
+def rank_subtitles(
+    results: list[Subtitle],
+    video_name: str = "",
+) -> list[Subtitle]:
     """
-    Prioriza correspondência exata com o vídeo e fontes confiáveis.
-    Popularidade é usada apenas como critério secundário.
+    Prioriza correspondência por hash e semelhança do release com o vídeo,
+    antes de considerar confiança e popularidade.
     """
     return sorted(
         results,
         key=lambda s: (
             s.moviehash_match,
+            subtitle_name_similarity(video_name, s.release or s.file_name),
             s.from_trusted,
             s.hearing_impaired is False,
             s.ai_translated is False,
@@ -556,7 +576,11 @@ def rank_subtitles(results: list[Subtitle]) -> list[Subtitle]:
     )
 
 
-def log_candidates(stage: str, candidates: list[Subtitle]) -> None:
+def log_candidates(
+    stage: str,
+    candidates: list[Subtitle],
+    video_name: str = "",
+) -> None:
     """Registra, de forma legível, as candidatas encontradas em uma etapa
     da busca (já parseadas e ranqueadas). Complementa o JSON bruto que
     já foi salvo em nível DEBUG logo antes desta chamada."""
@@ -568,12 +592,13 @@ def log_candidates(stage: str, candidates: list[Subtitle]) -> None:
     )
     for i, s in enumerate(candidates, start=1):
         logger.info(
-            "  [%d] file_id=%s release=%r moviehash_match=%s trusted=%s "
-            "downloads=%s rating=%s hi=%s ai=%s mt=%s",
+            "  [%d] file_id=%s release=%r moviehash_match=%s name_similarity=%.0f%% "
+            "trusted=%s downloads=%s rating=%s hi=%s ai=%s mt=%s",
             i,
             s.file_id,
             s.release or s.file_name,
             s.moviehash_match,
+            subtitle_name_similarity(video_name, s.release or s.file_name) * 100,
             s.from_trusted,
             s.download_count,
             s.rating,
@@ -663,14 +688,16 @@ def choose_subtitle_gui(
     )
     header.pack(anchor="w")
 
-    columns = ("release", "flags", "downloads", "rating")
+    columns = ("release", "flags", "similarity", "downloads", "rating")
     tree = ttk.Treeview(root, columns=columns, show="headings", selectmode="browse")
     tree.heading("release", text="Release / arquivo")
     tree.heading("flags", text="Indicadores")
+    tree.heading("similarity", text="Nome (%)")
     tree.heading("downloads", text="Downloads")
     tree.heading("rating", text="Avaliação")
-    tree.column("release", width=430, anchor="w")
-    tree.column("flags", width=220, anchor="w")
+    tree.column("release", width=370, anchor="w")
+    tree.column("flags", width=180, anchor="w")
+    tree.column("similarity", width=90, anchor="center")
     tree.column("downloads", width=100, anchor="center")
     tree.column("rating", width=90, anchor="center")
 
@@ -688,6 +715,7 @@ def choose_subtitle_gui(
             values=(
                 display_name,
                 _format_flags(subtitle),
+                f"{subtitle_name_similarity(video.stem, subtitle.release or subtitle.file_name):.0%}",
                 subtitle.download_count,
                 f"{subtitle.rating:.1f}" if subtitle.rating is not None else "—",
             ),

@@ -8,10 +8,10 @@ Ao clicar em **Baixar legenda PT-BR** no menu de contexto de um vídeo:
 
 1. calcula o moviehash do vídeo;
 2. procura legendas PT-BR por moviehash;
-3. se não encontrar, faz fallback para busca pelo nome do arquivo;
+3. para filmes, também busca pelo título identificado, mesmo quando encontrou match de moviehash, e combina os resultados sem duplicatas; o match de moviehash fica em primeiro lugar;
 4. se ainda não existir `Video.srt`, mostra todas as legendas encontradas em uma janela;
 5. se `Video.srt` já existir, mostra na janela apenas as legendas que ainda não foram tentadas para aquele moviehash;
-6. o usuário escolhe na janela a legenda que faz mais sentido (release, downloads, avaliação, se é match exato de moviehash, se é confiável, HI, tradução por IA/máquina) e clica em "Baixar selecionada";
+6. o usuário escolhe na janela a legenda que faz mais sentido (release, semelhança do nome com o vídeo, downloads, avaliação, se é match exato de moviehash, se é confiável, HI, tradução por IA/máquina) e clica em "Baixar selecionada";
 7. registra a legenda tentada em SQLite;
 8. substitui o `.srt` somente depois de o download terminar corretamente.
 
@@ -125,7 +125,7 @@ Assim, uma mesma legenda pode ser baixada para vídeos diferentes sem conflito, 
 
 - O download solicitado à API consome a cota de downloads do OpenSubtitles.
 - O programa não baixa várias candidatas para descobrir qual é melhor: ele baixa somente a próxima candidata selecionada. Isso preserva a cota.
-- A API retorna as legendas com metadados de correspondência, confiança e downloads; o programa prioriza match de moviehash, fonte confiável e popularidade recente antes de escolher a candidata.
+- A API retorna as legendas com metadados de correspondência, confiança e downloads; o programa prioriza match de moviehash e semelhança do release com o nome do vídeo, antes de considerar confiança e popularidade. Como um match de hash pode não corresponder ao release correto, também são mostradas alternativas encontradas pelo título.
 - O `.srt` é salvo em UTF-8, conforme o comportamento documentado pela API.
 
 ## Estrutura
